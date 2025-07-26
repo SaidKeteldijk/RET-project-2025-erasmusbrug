@@ -1,116 +1,130 @@
 #!/usr/bin/env python3
 """
-Retrieve real-time location for RET tram line 24 (direction De Esch)
-from two open data APIs and print the results.
+Best‑effort KV6 listener + publiekslijn mapping (RET & HTM)
+==========================================================
+* Leest **twee** NeTEx‑bestanden in dezelfde map als dit script:
+    • `netex-ret.gz`
+    • `netex-htm.gz`
+  en bouwt één mapping `lineplanningnumber → publiekslijn`.
+* Luistert op best‑effort ZeroMQ :7658, envelope **/RIG**.
+  (Daar verschijnen zowel RET‑ als HTM‑berichten.)
+* **Geen verdere filtering:** elk ontvangen frame wordt uitgepakt,
+  publiekslijn lookup gedaan (indien beschikbaar) en weggeschreven.
+* Console‑output én logfile **Output/rig_feed_public.txt**.
 
-APIs used
----------
-1. **OVapi GTFS-RT** – publicly hosted Dutch feed that aggregates operator
-   vehicle positions at https://gtfs.ovapi.nl/nl/vehiclePositions.pb
-2. **Plannerstack NDOV GTFS-RT** – alternate GTFS-RT gateway provided by
-   Plannerstack at http://gtfsrt.plannerstack.com/vehiclePositions
-
-Both endpoints expose protobuf files conforming to the GTFS-Realtime
-specification. The script fetches each feed, scans for RET vehicles that
-belong to tram 24 whose head-sign indicates the destination “De Esch”,
-and prints a human-readable one-liner per matching vehicle.
-
-Installation
-------------
-Create a virtual-env and install dependencies:
-
+Afhankelijkheden
+----------------
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install requests gtfs-realtime-bindings protobuf
+pip install pyzmq lxml  # lxml alleen nodig voor snelle XML‑parse
 ```
 
-Running the script simply prints the latest coordinates:
-
+Gebruik
+-------
 ```bash
-python ret_tram24_locations.py
+python main.py
 ```
-
-If no vehicles are matched (e.g. outside service hours) the script will
-report that fact but still exit cleanly.
+Ctrl‑C stopt de sessie.
 """
 
-import requests
-from datetime import datetime, timezone
-from google.transit import gtfs_realtime_pb2
+from gzip import GzipFile
+from io import BytesIO
+from pathlib import Path
+import time
+import xml.etree.ElementTree as ET
 
-# ---- configuration -------------------------------------------------------
-OVAPI_URL = "https://gtfs.ovapi.nl/nl/vehiclePositions.pb"
-PLANNERSTACK_URL = "http://gtfsrt.plannerstack.com/vehiclePositions"
+import zmq
 
-# Line identification parameters
-LINE_PUBLIC_NUMBER = {"24", "024"}  # some feeds left-pad with zeros
-DESTINATION_KEYWORDS = ("DE ESCH", "ESCH")  # case-insensitive match
-# DataOwnerCode for RET is "RET" but not all feeds expose it directly
+# ───────────── instellingen ─────────────
+# beide NeTEx‑bestanden liggen naast main.py
+NETEX_FILES = [
+    Path(__file__).with_name("netex-ret.gz"),
+    Path(__file__).with_name("netex-htm.gz"),
+]
 
-# ---- helper functions ----------------------------------------------------
+ENDPOINT = "tcp://pubsub.besteffort.ndovloket.nl:7658"
+ENVELOPE = "/RIG"          # bevat o.a. RET & HTM
+LOG_FILE = (
+    Path(__file__).resolve().parent.parent / "Output" / "rig_feed_public.txt"
+)
+# ─────────────────────────────────────────
 
-def fetch_feed(url: str) -> bytes:
-    """Download feed and return raw protobuf bytes."""
-    resp = requests.get(url, timeout=10)
-    resp.raise_for_status()
-    return resp.content
 
-
-def parse_feed(data: bytes, source: str):
-    """Yield vehicle dicts for matching tram 24 → De Esch."""
-    feed = gtfs_realtime_pb2.FeedMessage()
-    feed.ParseFromString(data)
-
-    for entity in feed.entity:
-        if not entity.HasField("vehicle"):
+def build_mapping(files: list[Path]) -> dict[str, str]:
+    """Bouw mapping uit meerdere NeTEx‑gz bestanden."""
+    mapping: dict[str, str] = {}
+    ns = {"n": "http://www.netex.org.uk/netex"}
+    for p in files:
+        if not p.exists():
+            print(f"[!] Waarschuwing: {p} niet gevonden → overgeslagen")
             continue
-        vp = entity.vehicle
-        trip = vp.trip
+        print(f"→ mapping laden uit {p.name}…")
+        with GzipFile(p) as f:
+            root = ET.parse(f).getroot()
+        for line in root.findall(".//n:Line", ns):
+            internal = (
+                line.findtext("n:PrivateCode", namespaces=ns)
+                or line.findtext("n:LineRef", namespaces=ns)
+            )
+            public = (
+                line.findtext("n:PublicCode", namespaces=ns)
+                or line.findtext("n:ShortName", namespaces=ns)
+            )
+            if internal and public:
+                mapping[internal] = public
+    print(f"→ totaal {len(mapping)} lijn‑ID’s gemapt.\n")
+    return mapping
 
-        # route_id often contains the public line number
-        line = (trip.route_id or trip.trip_short_name or "").lstrip("0")
-        headsign = trip.trip_headsign or ""
 
-        match_line = line in LINE_PUBLIC_NUMBER
-        match_dest = any(k.lower() in headsign.lower() for k in DESTINATION_KEYWORDS)
+def gunzip(buf: bytes) -> str:
+    return GzipFile("", "r", 0, BytesIO(buf)).read().decode("utf-8", "replace")
 
-        if match_line and match_dest:
-            yield {
-                "source": source,
-                "vehicle_id": vp.vehicle.id,
-                "timestamp": datetime.fromtimestamp(vp.timestamp, tz=timezone.utc).isoformat(),
-                "lat": vp.position.latitude,
-                "lon": vp.position.longitude,
-                "bearing": vp.position.bearing,
-                "headsign": headsign,
-            }
 
-# ---- main ----------------------------------------------------------------
+def main() -> None:  # noqa: CCR001
+    mapping = build_mapping(NETEX_FILES)
 
-def main():
-    all_matches = []
+    LOG_FILE.parent.mkdir(exist_ok=True)
+    log = LOG_FILE.open("a", encoding="utf-8")
+    log.write(f"\n===== sessie {time.strftime('%F %T')} =====\n")
+    log.flush()
 
-    for url, label in (
-        (OVAPI_URL, "OVapi"),
-        (PLANNERSTACK_URL, "Plannerstack"),
-    ):
-        try:
-            data = fetch_feed(url)
-            all_matches.extend(parse_feed(data, label))
-        except Exception as exc:
-            print(f"⚠️  {label} feed unavailable: {exc}")
+    ctx = zmq.Context()
+    sub = ctx.socket(zmq.SUB)
+    sub.connect(ENDPOINT)
+    sub.setsockopt_string(zmq.SUBSCRIBE, ENVELOPE)
 
-    if not all_matches:
-        print("No live RET tram 24 → De Esch vehicles reported right now.")
-        return
+    print(
+        f"▶ Luisteren op {ENDPOINT}  envelope={ENVELOPE}  → log {LOG_FILE}\n"
+        f"  mapping: {', '.join(p.name for p in NETEX_FILES if p.exists())}"
+    )
 
-    print("Live positions for RET tram 24 → De Esch:\n")
-    for v in all_matches:
-        print(
-            f"[{v['source']}] {v['timestamp']}: id={v['vehicle_id']} "
-            f"{v['lat']:.6f}, {v['lon']:.6f} (bearing {v['bearing']:.0f}°) — {v['headsign']}"
-        )
+    try:
+        while True:
+            topic, payload = sub.recv_multipart()
+            xml = gunzip(payload)
+
+            # publiekslijn (optioneel)
+            try:
+                lp_num = xml.split("<tm18:lineplanningnumber>")[1].split("<")[0]
+            except IndexError:
+                lp_num = "?"
+            public = mapping.get(lp_num, lp_num)
+
+            header = (
+                f"\n--- {time.strftime('%F %T')}  topic {topic.decode()}  "
+                f"publiekslijn {public} (internal {lp_num}) ---"
+            )
+            print(header)
+            print(xml)
+
+            log.write(header + "\n" + xml + "\n")
+            log.flush()
+
+    except KeyboardInterrupt:
+        print("\n[Stop]")
+    finally:
+        log.close()
+        sub.close()
+        ctx.term()
 
 
 if __name__ == "__main__":
