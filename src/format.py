@@ -1,13 +1,6 @@
 #!/usr/bin/env python3
 """
-KV6 listener – alleen RET‑tram lijnen 3, 5 en de Erasmusbrug‑lijnen 20/23/25
-==============================================================================
-• Leest NeTEx‑bestanden (netex-ret.gz & netex-htm.gz) naast dit script → mapping
-  `lineplanningnumber ➜ publiekslijn`.
-• Luistert op best‑effort KV6 via envelope **/RIG**.
-• Slaat HTM (en andere niet‑RET‑vervoerders) over.
-• Filtert daarna op publiekslijn ∈ {3, 5, 20, 23, 25}.
-• Print unieke berichten in leesbaar formaat.
+KV6 listener – publiekslijnmapping, HTM uitgefilterd
 """
 
 from dataclasses import dataclass
@@ -19,11 +12,10 @@ import zmq
 
 ENDPOINT = "tcp://pubsub.besteffort.ndovloket.nl:7658"
 ENVELOPE = "/RIG"
-NETEX_FILES = ["netex-ret.gz", "netex-htm.gz"]
-SKIP_OWNER = "HTM"                     # HTM overslaan
-KEEP_LINES = {"3", "5"}   # gewenste publiekslijnen
+NETEX_FILES = ["netex-ret-28-7-ndov.gz", "netex-htm.gz"]   # moeten naast dit script liggen
+SKIP_OWNER = "HTM"                               # filter‑vervoerder
 
-# ───────── dataclass ─────────
+# ────────── dataclass ──────────
 @dataclass
 class Kv6Update:
     owner: str
@@ -45,12 +37,12 @@ class Kv6Update:
             f"Tijd: {self.timestamp}\n"
             f"Voertuignummer: {self.veh}\n"
             f"Ritnummer: {self.journey}\n"
-            f"rd‑x: {self.rd_x}\nrd‑y: {self.rd_y}\n"
-            + "─" * 40
+            f"rd‑x: {self.rd_x}\n"
+            f"rd‑y: {self.rd_y}\n"
+            "─" * 40
         )
 
-# ───────── helpers ─────────
-
+# ───── helperfuncties ─────
 def gunzip(buf: bytes) -> str:
     return GzipFile("", "r", 0, BytesIO(buf)).read().decode("utf-8", "replace")
 
@@ -98,8 +90,7 @@ def parse_update(xml: str, mapping: dict[str, str]) -> Kv6Update | None:
             )
     return None
 
-# ───────── main ─────────
-
+# ─────────── main ───────────
 def main() -> None:
     mapping = build_mapping()
 
@@ -109,10 +100,7 @@ def main() -> None:
     sub.setsockopt_string(zmq.SUBSCRIBE, ENVELOPE)
 
     seen: tuple[str, str, str] | None = None
-    print(
-        f"▶ luisteren op {ENDPOINT} envelope {ENVELOPE}\n"
-        f"  houd publiekslijnen: {', '.join(sorted(KEEP_LINES))}"
-    )
+    print(f"▶ luisteren op {ENDPOINT} envelope {ENVELOPE} – HTM wordt overgeslagen")
 
     try:
         while True:
@@ -120,12 +108,10 @@ def main() -> None:
             upd = parse_update(gunzip(payload), mapping)
             if not upd:
                 continue
-            if upd.owner == SKIP_OWNER:
-                continue  # HTM overslaan
-            if upd.line_public not in KEEP_LINES:
-                continue  # ongewenste lijn
-            if upd.key() == seen:
-                continue  # duplicate
+            if upd.owner == SKIP_OWNER:        # HTM? → overslaan
+                continue
+            if upd.key() == seen:              # duplicate
+                continue
             seen = upd.key()
             print(upd.pretty())
     except KeyboardInterrupt:

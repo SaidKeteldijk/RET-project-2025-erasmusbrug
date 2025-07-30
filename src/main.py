@@ -37,7 +37,7 @@ import zmq
 # ───────────── instellingen ─────────────
 # beide NeTEx‑bestanden liggen naast main.py
 NETEX_FILES = [
-    Path(__file__).with_name("netex-ret.gz"),
+    Path(__file__).with_name("netex-ret-28-7-ndov.gz"),
     Path(__file__).with_name("netex-htm.gz"),
 ]
 
