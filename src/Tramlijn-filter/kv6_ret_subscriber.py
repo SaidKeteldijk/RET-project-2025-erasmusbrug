@@ -24,22 +24,17 @@ import zmq
 from netex_mapper import NetexMapper
 from rd_converter import RDConverter
 
-# ---------------------------------------------------------------------------
-# CONFIG
-# ---------------------------------------------------------------------------
 SCRIPT_DIR: Final[Path] = Path(__file__).resolve().parent
-NETEX_FILE: Final[Path] = SCRIPT_DIR / "netex-ret-28-7-ndov.gz"
+NETEX_FILE: Final[Path] = SCRIPT_DIR / "netex-ret-8-9-ndov.gz"
 OUTPUT_FILE: Final[Path] = SCRIPT_DIR / "output.txt"
 
 ZMQ_ENDPOINT: Final[str] = "tcp://pubsub.besteffort.ndovloket.nl:7658"
 ZMQ_TOPIC: Final[str] = "/RIG"
 
-# Toon alleen deze publieks‑lijnnummers (strings) – hier tram 3 en 5
+
 ALLOWED_LINES: Final[Set[str]] = {"3", "5"}
 
-# ---------------------------------------------------------------------------
-# KV6 helpers
-# ---------------------------------------------------------------------------
+
 MSG_RE: Final[re.Pattern[str]] = re.compile(r"<tmi8:(ONROUTE|ONSTOP).*?</tmi8:\1>", re.DOTALL)
 
 _TAG_CACHE: Dict[str, re.Pattern[str]] = {}
@@ -60,9 +55,6 @@ TAGS: Tuple[str, ...] = (
     "tmi8:rd-y",
 )
 
-# ---------------------------------------------------------------------------
-# Subscriber class
-# ---------------------------------------------------------------------------
 class KV6Subscriber:
     """RET‑only subscriber that logs messages for specified public lines."""
 
@@ -79,9 +71,7 @@ class KV6Subscriber:
         self.sock.connect(endpoint)
         self.sock.setsockopt_string(zmq.SUBSCRIBE, topic)
 
-    # ------------------------
-    # Main loop
-    # ------------------------
+
     def run(self) -> None:
         line_list = ", ".join(sorted(self.allowed_lines))
         print(f"📡  Listening (RET, lijnen {line_list}) – Ctrl‑C to stop…")
@@ -98,15 +88,14 @@ class KV6Subscriber:
                     err_path = tmpdir / f"kv6_error_{ts}.xml.gz"
                     with err_path.open("wb") as fh:
                         fh.write(b"".join(frames[1:]))
-                    print(f"⚠️  parse error {exc} – raw saved to {err_path}")
+                    print(f"  parse error {exc} – raw saved to {err_path}")
         except KeyboardInterrupt:
             print("Stopping…")
         finally:
             self.sock.close(); self.sock.context.term()
 
-    # ------------------------
+
     # Internals
-    # ------------------------
     @staticmethod
     def _extract_payload(frames: List[bytes]) -> str:
         raw = b"".join(frames)
@@ -166,12 +155,10 @@ class KV6Subscriber:
         print(block)
         self._log(block)
 
-# ---------------------------------------------------------------------------
-# Entrypoint
-# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
     mapper = NetexMapper(NETEX_FILE)
     converter = RDConverter()
     sub = KV6Subscriber(mapper, converter, allowed_lines=ALLOWED_LINES)
-    print(f"🔄  Loaded {len(mapper._map)} line‑codes. Output ➜ {OUTPUT_FILE}\n")
+    print(f"Loaded {len(mapper._map)} line‑codes. Output ➜ {OUTPUT_FILE}\n")
     sub.run()

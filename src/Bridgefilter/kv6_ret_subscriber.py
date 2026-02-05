@@ -31,7 +31,7 @@ from rd_converter import RDConverter
 # CONFIG
 # ---------------------------------------------------------------------------
 SCRIPT_DIR: Final[Path] = Path(__file__).resolve().parent
-NETEX_FILE: Final[Path] = SCRIPT_DIR / "netex-ret-28-7-ndov.gz"
+NETEX_FILE: Final[Path] = SCRIPT_DIR / "netex-ret-8-9-ndov.gz"
 
 ZMQ_ENDPOINT: Final[str] = "tcp://pubsub.besteffort.ndovloket.nl:7658"
 ZMQ_TOPIC: Final[str] = "/RIG"
@@ -86,7 +86,7 @@ class BridgeMonitor:
 
     # ------------------------
     def run(self) -> None:
-        print("📡  Monitoring Willemsbrug (RET lijnen 3 & 5). Ctrl‑C to stop…")
+        print(" Monitoring Willemsbrug (RET lijnen 3 & 5). Ctrl‑C to stop…")
         tmpdir = Path(tempfile.gettempdir())
         try:
             while True:
@@ -100,7 +100,7 @@ class BridgeMonitor:
                     err_path = tmpdir / f"kv6_err_{ts}.xml.gz"
                     with err_path.open("wb") as fh:
                         fh.write(b"".join(frames[1:]))
-                    print(f"⚠️  parse error {exc} – raw saved to {err_path}")
+                    print(f" parse error {exc} – raw saved to {err_path}")
         except KeyboardInterrupt:
             print("Stopping…")
         finally:
