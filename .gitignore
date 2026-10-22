@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+
+# Automatisch gedownloade NetEx-dienstregeling en meetresultaten
+src/netex_cache/
+src/metingen.csv
